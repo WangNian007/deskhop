@@ -395,8 +395,11 @@ void process_mouse_queue_task(device_t *state) {
     if (tud_suspended())
         tud_remote_wakeup();
 
-    /* If it's not ready, we'll try on the next pass */
-    if (!tud_hid_n_ready(ITF_NUM_HID))
+    /* Absolute and relative reports use different HID interfaces. */
+    uint8_t instance = (report.mode == RELATIVE) ? ITF_NUM_HID_REL_M : ITF_NUM_HID;
+
+    /* If the target interface is not ready, we'll try on the next pass */
+    if (!tud_hid_n_ready(instance))
         return;
 
     /* Try sending it to the host, if it's successful */
@@ -412,6 +415,28 @@ void queue_mouse_report(mouse_report_t *report, device_t *state) {
     /* It wouldn't be fun to queue up a bunch of messages and then dump them all on host */
     if (!state->tud_connected)
         return;
+
+    output_t *output = &state->config.output[state->active_output];
+
+    /* Some Linux HID stacks (including affected Kylin versions) expose the
+       absolute pointer but ignore a relative wheel in the same report. Keep
+       pointer movement on the absolute interface so desktop switching still
+       works, and send scrolling through the relative helper interface. */
+    if (output->os == LINUX && report->mode == ABSOLUTE &&
+        (report->wheel != 0 || report->pan != 0)) {
+        mouse_report_t pointer_report = *report;
+        pointer_report.wheel = 0;
+        pointer_report.pan   = 0;
+        queue_try_add(&state->mouse_queue, &pointer_report);
+
+        mouse_report_t scroll_report = {
+            .wheel = report->wheel,
+            .pan   = report->pan,
+            .mode  = RELATIVE,
+        };
+        queue_try_add(&state->mouse_queue, &scroll_report);
+        return;
+    }
 
     queue_try_add(&state->mouse_queue, report);
 }
